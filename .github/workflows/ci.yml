@@ -1,0 +1,127 @@
+name: Continuous Integration
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  # ==========================================
+  # JOB 1: Backend Lint & Test
+  # ==========================================
+  backend:
+    name: Backend Lint & Test
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgrespassword
+          POSTGRES_DB: taskmanager_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout repository code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+          cache-dependency-path: backend/package-lock.json
+
+      - name: Install backend dependencies
+        run: npm --prefix backend ci
+
+      - name: Run backend linter
+        run: npm --prefix backend run lint
+
+      - name: Run database migrations on test database
+        env:
+          NODE_ENV: test
+          DB_HOST: localhost
+          DB_PORT: 5432
+          DB_TEST_NAME: taskmanager_test
+          DB_USER: postgres
+          DB_PASSWORD: postgrespassword
+        run: npm --prefix backend run migrate
+
+      - name: Run backend Jest test suite
+        env:
+          NODE_ENV: test
+          DB_HOST: localhost
+          DB_PORT: 5432
+          DB_TEST_NAME: taskmanager_test
+          DB_USER: postgres
+          DB_PASSWORD: postgrespassword
+          JWT_SECRET: ci_test_secret_key_minimum_32_characters_long
+        run: npm --prefix backend run test
+
+  # ==========================================
+  # JOB 2: Frontend Lint, Test & Build
+  # ==========================================
+  frontend:
+    name: Frontend Lint, Test & Build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        run: npm --prefix frontend ci
+
+      - name: Run frontend linter
+        run: npm --prefix frontend run lint
+
+      - name: Run frontend Vitest test suite
+        run: npm --prefix frontend run test
+
+      - name: Build frontend production bundle
+        run: npm --prefix frontend run build
+
+  # ==========================================
+  # JOB 3: Test Docker Image Builds
+  # ==========================================
+  docker-build:
+    name: Docker Images Build Verification
+    needs: [backend, frontend]
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Backend Docker Image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./backend
+          push: false
+          tags: taskmanager-backend:latest
+
+      - name: Build Frontend Docker Image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./frontend
+          push: false
+          tags: taskmanager-frontend:latest
