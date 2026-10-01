@@ -1,5 +1,5 @@
 # DevOps & Cloud Engineering Master Study Guide
-**Project: Full-Stack Task Management Platform CI/CD & AWS Deployment**
+**Project: Full-Stack Task Management Platform CI/CD & AWS Deployment**  
 **Author:** Bhargav  
 **Target Audience:** DevOps / SRE / Cloud Engineer Interview Preparation  
 
@@ -15,16 +15,15 @@
 1. [Core Architectural Overview](#1-core-architectural-overview)
 2. [Step 1: Application Architecture & State Management](#step-1-application-architecture--state-management)
 3. [Step 2: Version Control Strategy (Git & GitHub)](#step-2-version-control-strategy-git--github)
-4. [Step 3: Dockerization & Multi-Stage Optimization](#step-3-dockerization--multi-stage-optimization)
-5. [Step 4: Local Multi-Container Orchestration (Docker Compose)](#step-4-local-multi-container-orchestration-docker-compose)
-6. [Step 5: Continuous Integration (CI) with GitHub Actions](#step-5-continuous-integration-ci-with-github-actions)
+4. [Step 3: Deep-Dive: Dockerfiles Line-by-Line Breakdown](#step-3-deep-dive-dockerfiles-line-by-line-breakdown)
+5. [Step 4: Deep-Dive: Docker Compose Files Line-by-Line](#step-4-deep-dive-docker-compose-files-line-by-line)
+6. [Step 5 & 8: Deep-Dive: GitHub Actions CI/CD Workflow (`ci.yml`) Line-by-Line](#step-5--8-deep-dive-github-actions-cicd-workflow-ciyml-line-by-line)
 7. [Step 6: Container Registry Management (Amazon ECR)](#step-6-container-registry-management-amazon-ecr)
 8. [Step 7: Cloud Infrastructure Provisioning (AWS EC2 & Security Groups)](#step-7-cloud-infrastructure-provisioning-aws-ec2--security-groups)
-9. [Step 8: Continuous Deployment (CD Pipeline Automation)](#step-8-continuous-deployment-cd-pipeline-automation)
-10. [Step 9: Production Hardening (Nginx, Gzip & Rate Limiting)](#step-9-production-hardening-nginx-gzip--rate-limiting)
-11. [Step 10: Smoke Testing, Monitoring & Post-Mortem](#step-10-smoke-testing-monitoring--post-mortem)
-12. [CLI vs. AWS Console (GUI) Deep Dive](#cli-vs-aws-console-gui-deep-dive)
-13. [Common DevOps Interview Questions & Answers on this Project](#common-devops-interview-questions--answers-on-this-project)
+9. [Step 9: Deep-Dive: Production Nginx Configuration (`nginx.conf`)](#step-9-deep-dive-production-nginx-configuration-nginxconf)
+10. [Step 10: Smoke Testing, Monitoring & Post-Mortem](#step-10-smoke-testing-monitoring--post-mortem)
+11. [CLI vs. AWS Console (GUI) Deep Dive](#cli-vs-aws-console-gui-deep-dive)
+12. [Common DevOps Interview Questions & Answers on this Project](#common-devops-interview-questions--answers-on-this-project)
 
 ---
 
@@ -67,7 +66,7 @@
 ## Step 1: Application Architecture & State Management
 
 ### What was done:
-- Built a RESTful backend with Express.js and native PostgreSQL driver (`pg`).
+- RESTful backend with Express.js and native PostgreSQL driver (`pg`).
 - Strict relational schema: `users` and `tasks` with foreign keys (`user_id REFERENCES users(id) ON DELETE CASCADE`).
 - Data isolation: Every task query requires `WHERE user_id = $1` to prevent Insecure Direct Object References (IDOR).
 - Frontend single-page app (SPA) built with React 18 and Vite.
@@ -84,10 +83,9 @@
 - Initialized local repository, configured `.gitignore` to prevent leaking `.env`, `node_modules`, and `.pem` SSH keys.
 - Established clean commit history following Conventional Commits (`feat:`, `fix:`, `docs:`).
 
-### Crucial Commands & Explanations:
 ```bash
 git init
-# Initializes a new Git repository in the current folder.
+# Initializes a new Git repository.
 
 echo "*.pem" >> .gitignore
 # CRITICAL: Ensures private keys are never committed to public repositories.
@@ -98,9 +96,10 @@ git remote add origin https://github.com/bhrgvbhrgv/taskManager.git
 
 ---
 
-## Step 3: Dockerization & Multi-Stage Optimization
+## Step 3: Deep-Dive: Dockerfiles Line-by-Line Breakdown
 
 ### 1. Backend Dockerfile (`backend/Dockerfile`)
+
 ```dockerfile
 FROM node:20-alpine
 WORKDIR /app
@@ -123,9 +122,24 @@ EXPOSE 5000
 CMD ["node", "src/server.js"]
 ```
 
+#### Line-by-Line Explanation:
+- `FROM node:20-alpine`: Uses Alpine Linux as the base image. While standard Debian-based images weigh ~1GB, Alpine is ~50MB, significantly reducing download time, network transfer costs, and vulnerability count.
+- `WORKDIR /app`: Sets the current execution directory inside the container for all subsequent commands (`RUN`, `COPY`, `CMD`).
+- `RUN apk add --no-cache python3 make g++`: Alpine uses `musl libc` instead of `glibc`. Native npm modules like `bcrypt` must compile C++ source code during installation, which requires Python, GNU Make, and a C++ compiler (`g++`). `--no-cache` prevents caching the index locally, saving disk space.
+- `COPY package*.json ./`: Copies only dependency definition files **before** copying application code. **DevOps Concept: Docker Layer Caching.** If application source code changes but dependencies don't, Docker reuses the cached layer of `npm ci`, slashing build times from minutes to seconds.
+- `RUN npm ci --omit=dev`: `npm ci` (Clean Install) requires an exact `package-lock.json` match and avoids altering dependency trees. `--omit=dev` ignores `devDependencies` (like Jest, Supertest), keeping the production image clean.
+- `RUN apk del python3 make g++`: Deletes compilers after `bcrypt` is built. The compiler is no longer needed at runtime, removing ~300MB of unnecessary tools and reducing the attack surface.
+- `COPY . .`: Copies the backend source code into `/app`. Files listed in `.dockerignore` (like `node_modules` and `.env`) are excluded.
+- `USER node`: **Container Security Best Practice.** By default, Docker containers execute as `root`. If an attacker exploits a remote code execution vulnerability in Node.js, they would gain root privileges inside the container. Switching to the built-in unprivileged `node` user mitigates container breakouts.
+- `EXPOSE 5000`: Documents that the application listens on port 5000. (Does not publish the port by itself; port publishing is handled by Docker Compose or `-p`).
+- `CMD ["node", "src/server.js"]`: The default executable process for the container. Using exec form (JSON array `["node", ...]`) ensures Node receives POSIX signals (`SIGTERM`, `SIGINT`) directly for graceful shutdowns.
+
+---
+
 ### 2. Frontend Multi-Stage Dockerfile (`frontend/Dockerfile`)
+
 ```dockerfile
-# Stage 1: Build stage (includes full Node + devDependencies)
+# Stage 1: Build stage
 FROM node:20-alpine AS build
 WORKDIR /app
 COPY package*.json ./
@@ -133,7 +147,7 @@ RUN npm ci
 COPY . .
 RUN npm run build
 
-# Stage 2: Production runtime stage (tiny Nginx container)
+# Stage 2: Production runtime stage
 FROM nginx:alpine
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 COPY --from=build /app/dist /usr/share/nginx/html
@@ -141,42 +155,167 @@ EXPOSE 80
 CMD ["nginx", "-g", "daemon off;"]
 ```
 
-### Why Multi-Stage Builds Matter (Interview Golden Point):
-- Stage 1 compiles Vite JSX/CSS into static assets (`dist/`), requiring `node_modules` (~120MB).
-- Stage 2 copies **only** the static `dist/` directory into Nginx Alpine (~25MB).
-- **Result**: The build toolchain, source code, and developer dependencies are completely excluded from production, vastly reducing image size and eliminating attack surface vectors.
+#### Line-by-Line Explanation:
+- `FROM node:20-alpine AS build`: Names this initial image layer `build`. This stage contains Node.js, npm, Vite, and all frontend developer dependencies.
+- `RUN npm run build`: Compiles JSX, CSS, and assets into optimized, minified static HTML, CSS, and JS chunks in `/app/dist`.
+- `FROM nginx:alpine`: Starts a brand new, completely separate image based on lightweight Nginx Alpine (~25MB). **Everything from the previous stage is discarded unless explicitly copied.**
+- `COPY nginx.conf /etc/nginx/conf.d/default.conf`: Replaces the default Nginx configuration with our custom reverse proxy and security header config.
+- `COPY --from=build /app/dist /usr/share/nginx/html`: Copies **only** the compiled production bundles from the `build` stage into Nginx's web root.
+- `EXPOSE 80`: Nginx listens on standard HTTP port 80.
+- `CMD ["nginx", "-g", "daemon off;"]`: Runs Nginx in the foreground. By default, Nginx daemonizes (forks to the background), which would cause Docker to think the container finished and immediately exit with code 0. `daemon off;` keeps the process in the foreground.
 
 ---
 
-## Step 4: Local Multi-Container Orchestration (Docker Compose)
+## Step 4: Deep-Dive: Docker Compose Files Line-by-Line
 
-### What was done:
-Configured `docker-compose.yml` to spin up `postgres`, `backend`, and `frontend` with network isolation, health checks, and volume mounts.
+### 1. Local Development Compose (`docker-compose.yml`)
 
-### Important Directives:
-- `depends_on` with `condition: service_healthy`: Prevents Express from starting and crashing before PostgreSQL is ready to accept connections.
-- `volumes: postgres_data:/var/lib/postgresql/data`: Ensures database data survives container restarts or teardowns.
+```yaml
+version: '3.8'
 
-### Commands:
-```bash
-docker compose up --build -d
-# --build: Forces rebuilding images from Dockerfiles
-# -d: Detached mode (runs in background)
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: taskmanager-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-postgres}
+      POSTGRES_DB: ${DB_NAME:-taskmanager_dev}
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./backend/migrations/001_initial_schema.sql:/docker-entrypoint-initdb.d/001_initial_schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-postgres} -d ${DB_NAME:-taskmanager_dev}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - app-network
 
-docker compose ps
-# Displays status, ports, and healthcheck states of all services.
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: taskmanager-backend
+    restart: unless-stopped
+    environment:
+      PORT: 5000
+      NODE_ENV: production
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: ${DB_NAME:-taskmanager_dev}
+      DB_USER: ${DB_USER:-postgres}
+      DB_PASSWORD: ${DB_PASSWORD:-postgres}
+      JWT_SECRET: ${JWT_SECRET:-super_secret_jwt_key_for_development_purposes_only_32chars}
+    ports:
+      - "5000:5000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - app-network
 
-docker compose down
-# Stops and removes containers and internal networks (preserves volumes).
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: taskmanager-frontend
+    restart: unless-stopped
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+    networks:
+      - app-network
+
+volumes:
+  postgres_data:
+    driver: local
+
+networks:
+  app-network:
+    driver: bridge
 ```
 
+#### Key Directives Explained:
+- `ports: "5433:5432"`: Maps host port `5433` to container port `5432`. We did this because local host machines often already run PostgreSQL on `5432`. This avoids port collisions while maintaining standard internal `5432` communication between containers.
+- `/docker-entrypoint-initdb.d/`: Official Postgres image hook. Any `.sql` mounted here executes automatically when the database container initializes for the first time.
+- `healthcheck`: Runs `pg_isready` every 5 seconds. Docker marks the container `healthy` only when Postgres can accept SQL connections.
+- `depends_on: postgres: condition: service_healthy`: Without this, Docker starts `backend` and `postgres` concurrently. Express would attempt to connect to Postgres before Postgres finishes initializing, causing Express to crash. `condition: service_healthy` ensures Express only launches when Postgres is 100% operational.
+- `networks: app-network (bridge)`: Creates an isolated private software bridge network. Containers resolve each other using their service names (`postgres`, `backend`) as DNS hostnames.
+
 ---
 
-## Step 5: Continuous Integration (CI) with GitHub Actions
+### 2. Production EC2 Compose (`docker-compose.prod.yml`)
 
-### Workflow (`.github/workflows/ci.yml`):
+```yaml
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: taskmanager-postgres
+    restart: always
+    environment:
+      POSTGRES_USER: task_user
+      POSTGRES_PASSWORD: task_secure_password_2026
+      POSTGRES_DB: taskmanager_db
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U task_user -d taskmanager_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - taskmanager-network
+
+  backend:
+    image: 560617058703.dkr.ecr.ap-south-1.amazonaws.com/taskmanager-backend:latest
+    container_name: taskmanager-backend
+    restart: always
+    env_file:
+      - .env
+    ports:
+      - "5000:5000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - taskmanager-network
+
+  frontend:
+    image: 560617058703.dkr.ecr.ap-south-1.amazonaws.com/taskmanager-frontend:latest
+    container_name: taskmanager-frontend
+    restart: always
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+    networks:
+      - taskmanager-network
+
+volumes:
+  postgres_data:
+
+networks:
+  taskmanager-network:
+    driver: bridge
+```
+
+#### Why Production Compose Differs from Dev Compose:
+- **`image:` instead of `build:`**: On EC2, we pull pre-compiled images from Amazon ECR instead of compiling code locally. A `t3.micro` instance has 1GB RAM; compiling Vite and building npm modules on EC2 would trigger Out-Of-Memory (OOM) kernel panics. Building on GitHub Actions and pulling pre-built images keeps EC2 CPU and memory usage minimal.
+- **`ports: "80:80"`**: In production, traffic arrives directly on standard HTTP port 80.
+- **`restart: always`**: If the EC2 server reboots or a container crashes, Docker's daemon automatically restarts the containers without human intervention.
+
+---
+
+## Step 5 & 8: Deep-Dive: GitHub Actions CI/CD Workflow (`ci.yml`) Line-by-Line
+
 ```yaml
 name: CI/CD Pipeline
+
 on:
   push:
     branches: [ main ]
@@ -185,7 +324,9 @@ on:
 
 jobs:
   test-backend:
+    name: Backend Tests
     runs-on: ubuntu-latest
+
     services:
       postgres:
         image: postgres:16-alpine
@@ -200,31 +341,132 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
+
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
         with:
           node-version: 20
-      - run: npm ci
+          cache: 'npm'
+          cache-dependency-path: backend/package-lock.json
+
+      - name: Install Dependencies
         working-directory: ./backend
-      - run: npm run migrate
+        run: npm ci
+
+      - name: Run Database Migrations for Tests
         working-directory: ./backend
-      - run: npm test
+        env:
+          NODE_ENV: test
+          DB_HOST: localhost
+          DB_PORT: 5432
+          DB_USER: task_user
+          DB_PASSWORD: task_password
+          DB_NAME: taskmanager_test
+        run: npm run migrate
+
+      - name: Run Backend Tests
         working-directory: ./backend
+        env:
+          PORT: 5000
+          NODE_ENV: test
+          DB_HOST: localhost
+          DB_PORT: 5432
+          DB_USER: task_user
+          DB_PASSWORD: task_password
+          DB_NAME: taskmanager_test
+          JWT_SECRET: test_jwt_secret_key_for_ci_pipeline
+        run: npm test
+
+  test-frontend:
+    name: Frontend Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install Dependencies
+        working-directory: ./frontend
+        run: npm ci
+
+      - name: Run Frontend Tests
+        working-directory: ./frontend
+        run: npm test
+
+  deploy:
+    name: Build, Push to ECR & Deploy to EC2
+    needs: [test-backend, test-frontend]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ap-south-1
+
+      - name: Log in to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and Push Backend Image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        run: |
+          docker build -t $ECR_REGISTRY/taskmanager-backend:latest ./backend
+          docker push $ECR_REGISTRY/taskmanager-backend:latest
+
+      - name: Build and Push Frontend Image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        run: |
+          docker build -t $ECR_REGISTRY/taskmanager-frontend:latest ./frontend
+          docker push $ECR_REGISTRY/taskmanager-frontend:latest
+
+      - name: Deploy to EC2 via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ubuntu
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            cd ~/app
+            aws ecr get-login-password --region ap-south-1 | docker login --username AWS --password-stdin ${{ steps.login-ecr.outputs.registry }}
+            docker compose -f docker-compose.prod.yml pull
+            docker compose -f docker-compose.prod.yml up -d
+            docker compose -f docker-compose.prod.yml exec -T backend npm run migrate
+            docker image prune -f
 ```
 
-### What Interviewers Look For:
-- **Service Containers in GitHub Actions**: We did not mock the database with in-memory SQLite; we used a real PostgreSQL Docker service container inside GitHub's runner, guaranteeing zero discrepancies between test and production databases.
-- **Fail-Fast Gating**: If tests fail, the downstream `deploy` job is skipped immediately.
+#### Detailed Breakdown of Key CI/CD Concepts:
+1. **`services: postgres:`**: Runs an isolated Docker container alongside the runner. This enables true integration testing without mocking database queries.
+2. **`cache: 'npm'`**: Caches `~/.npm` based on the hash of `package-lock.json`. Subsequent runs avoid re-downloading packages from npm registry.
+3. **`needs: [test-backend, test-frontend]`**: Creates an execution dependency. The `deploy` job is strictly blocked until both test jobs succeed.
+4. **`if: github.ref == 'refs/heads/main' && github.event_name == 'push'`**: Ensures pull requests only trigger tests and do NOT deploy to production.
+5. **`appleboy/ssh-action`**: Connects to the EC2 server over SSH (port 22) using the private key stored in GitHub Secrets.
+6. **`docker compose exec -T backend npm run migrate`**: `-T` disables pseudo-terminal allocation, required when executing commands inside non-interactive CI/CD scripts.
+7. **`docker image prune -f`**: Deletes untagged/dangling intermediate Docker images on the EC2 host after deployment, preventing server disk space exhaustion.
 
 ---
 
 ## Step 6: Container Registry Management (Amazon ECR)
 
-### What was done:
-Created two private ECR repositories (`taskmanager-backend` and `taskmanager-frontend`), authenticated local Docker client, and pushed tagged container images.
-
-### Commands & Explanations:
 ```bash
 # 1. Create Repositories in AWS ECR
 aws ecr create-repository --repository-name taskmanager-backend --region ap-south-1
@@ -232,7 +474,6 @@ aws ecr create-repository --repository-name taskmanager-frontend --region ap-sou
 
 # 2. Retrieve Docker Login Token from ECR & Pipe into Docker
 aws ecr get-login-password --region ap-south-1 | docker login --username AWS --password-stdin 560617058703.dkr.ecr.ap-south-1.amazonaws.com
-# Explanation: AWS IAM returns an ephemeral authentication token valid for 12 hours. Piping to `docker login --password-stdin` prevents credentials from appearing in bash shell history.
 
 # 3. Build & Tag
 docker build -t 560617058703.dkr.ecr.ap-south-1.amazonaws.com/taskmanager-backend:latest ./backend
@@ -247,12 +488,6 @@ docker push 560617058703.dkr.ecr.ap-south-1.amazonaws.com/taskmanager-frontend:l
 
 ## Step 7: Cloud Infrastructure Provisioning (AWS EC2 & Security Groups)
 
-### What was done:
-- Selected **`t3.micro`** (2 vCPUs, 1GB RAM) to strictly stay within AWS Free Tier (750 free hours/month).
-- Provisioned Ubuntu 24.04 LTS instance with attached Elastic Block Store (gp3).
-- Configured stateful Security Group firewall.
-
-### Commands & Explanations:
 ```bash
 # 1. Generate SSH Key Pair
 aws ec2 create-key-pair \
@@ -262,7 +497,7 @@ aws ec2 create-key-pair \
   --region ap-south-1 > taskManager.pem
 
 chmod 400 taskManager.pem
-# Octal 400: Read-only by owner, no permissions for group/others. SSH rejects keys that are world-readable.
+# Octal 400: Read-only by owner. SSH rejects keys that are accessible by others.
 
 # 2. Create Security Group
 aws ec2 create-security-group \
@@ -296,63 +531,8 @@ ssh -i taskManager.pem ubuntu@13.204.66.253
 
 ---
 
-## Step 8: Continuous Deployment (CD Pipeline Automation)
+## Step 9: Deep-Dive: Production Nginx Configuration (`nginx.conf`)
 
-### GitHub Repository Secrets Configured:
-- `AWS_ACCESS_KEY_ID`: IAM programmatic access key.
-- `AWS_SECRET_ACCESS_KEY`: IAM secret key.
-- `EC2_HOST`: Public IPv4 (`13.204.66.253`).
-- `EC2_SSH_KEY`: Raw private key content of `taskManager.pem`.
-
-### Automated CD Job (`appleboy/ssh-action`):
-```yaml
-  deploy:
-    name: Build, Push to ECR & Deploy to EC2
-    needs: [test-backend, test-frontend]
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ap-south-1
-
-      - uses: aws-actions/amazon-ecr-login@v2
-        id: login-ecr
-
-      - name: Build & Push Images
-        run: |
-          docker build -t ${{ steps.login-ecr.outputs.registry }}/taskmanager-backend:latest ./backend
-          docker push ${{ steps.login-ecr.outputs.registry }}/taskmanager-backend:latest
-          docker build -t ${{ steps.login-ecr.outputs.registry }}/taskmanager-frontend:latest ./frontend
-          docker push ${{ steps.login-ecr.outputs.registry }}/taskmanager-frontend:latest
-
-      - name: Deploy to EC2 via SSH
-        uses: appleboy/ssh-action@v1.0.3
-        with:
-          host: ${{ secrets.EC2_HOST }}
-          username: ubuntu
-          key: ${{ secrets.EC2_SSH_KEY }}
-          script: |
-            cd ~/app
-            aws ecr get-login-password --region ap-south-1 | docker login --username AWS --password-stdin ${{ steps.login-ecr.outputs.registry }}
-            docker compose -f docker-compose.prod.yml pull
-            docker compose -f docker-compose.prod.yml up -d
-            docker compose -f docker-compose.prod.yml exec -T backend npm run migrate
-            docker image prune -f
-```
-
-### Production Compose File on EC2 (`~/app/docker-compose.prod.yml`):
-- Pulls pre-built images from Amazon ECR instead of building them locally on the server (saves EC2 CPU/RAM).
-- Uses `docker image prune -f` to clean up old dangling image layers, preventing disk exhaustion on the 8GB root drive.
-
----
-
-## Step 9: Production Hardening (Nginx, Gzip & Rate Limiting)
-
-### Updated `frontend/nginx.conf`:
 ```nginx
 # Rate limiting zone: max 10 requests/sec per client IP, storing up to 10MB of IP states
 limit_req_zone $binary_remote_addr zone=api_limit:10m rate=10r/s;
@@ -374,7 +554,7 @@ server {
     gzip_proxied expired no-cache no-store private auth;
     gzip_types text/plain text/css text/xml text/javascript application/x-javascript application/xml application/json;
 
-    # Static assets
+    # Static SPA assets
     location / {
         root /usr/share/nginx/html;
         index index.html index.htm;
@@ -398,11 +578,11 @@ server {
 }
 ```
 
-### Verification via `curl -I`:
-```bash
-curl -I http://13.204.66.253/
-```
-Output verified: `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, and `Server: nginx`.
+#### Detailed Breakdown of Nginx Directives:
+- `limit_req_zone $binary_remote_addr zone=api_limit:10m rate=10r/s`: Tracks client IP addresses in a 10 Megabyte shared memory zone. `$binary_remote_addr` uses 4 bytes per IPv4 (compared to 7-15 bytes for text IPs), allowing 10MB to track ~160,000 unique client IPs simultaneously.
+- `burst=20 nodelay`: Allows clients to make up to 20 sudden rapid requests without delay, but drops any subsequent requests exceeding 10 req/s with HTTP `503 Service Unavailable`. Protects backend Node process from being saturated by DoS/brute-force attacks.
+- `try_files $uri $uri/ /index.html`: Essential for React Router (Single Page Applications). When a user navigates to `/dashboard` or refreshes the page, Nginx checks if a physical file named `/dashboard` exists. If not, it falls back to `/index.html`, allowing React's client-side router to handle the route.
+- `proxy_pass http://backend:5000`: Proxies matching `/api/*` requests across the internal Docker network directly to the Express backend container.
 
 ---
 
@@ -411,15 +591,13 @@ Output verified: `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, and
 ### Production Verification:
 1. **Health Check**:
    `curl -s http://13.204.66.253/api/health`
-   ➔ `{"status":"ok","database":"connected","timestamp":"2026-10-01T21:50:15.715Z"}`
+   ➔ `{"status":"ok","database":"connected","timestamp":"..."}`
 2. **User Registration & Task Creation**:
    Verified complete authentication and database persistence live in production.
 
 ---
 
 ## CLI vs. AWS Console (GUI) Deep Dive
-
-In interviews, you may be asked how to achieve these tasks in the AWS Management Console (web GUI):
 
 | Task | AWS CLI Command | AWS Console (GUI) Navigation |
 |---|---|---|
