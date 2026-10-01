@@ -16,7 +16,7 @@ export const Navbar = () => {
       <div className="navbar-container">
         <Link to="/" className="navbar-brand">
           <span className="brand-icon">✓</span>
-          <span className="brand-text">TaskMaster</span>
+          <span className="brand-text">TaskMaster 🚀</span>
         </Link>
 
         <nav className="navbar-nav">
