@@ -415,34 +415,7 @@ npm run lint
 
 ---
 
-## 16. Definition of Done Checklist
-
-* [x] Dependencies install successfully
-* [x] PostgreSQL connection works
-* [x] Migrations work (`npm run migrate`)
-* [x] Seed works (`npm run seed`)
-* [x] Backend starts and runs cleanly
-* [x] Frontend starts and runs cleanly
-* [x] Registration works
-* [x] Login works
-* [x] Logout works
-* [x] JWT protection works
-* [x] Task CRUD works
-* [x] Cross-user access is prevented
-* [x] Dashboard works with visual breakdown
-* [x] Search works
-* [x] Filters work
-* [x] Sorting works
-* [x] Pagination works
-* [x] Health endpoint works
-* [x] Backend tests pass (26/26 tests passing)
-* [x] Frontend tests pass (12/12 tests passing)
-* [x] Lint passes on backend and frontend
-* [x] Frontend production build passes
-
----
-
-## 17. DevOps & Production Architecture
+## 16. DevOps & Production Architecture
 
 ### System Architecture
 ```
