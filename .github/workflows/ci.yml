@@ -1,4 +1,4 @@
-name: Continuous Integration
+name: CI/CD Pipeline
 
 on:
   push:
@@ -7,20 +7,17 @@ on:
     branches: [ main ]
 
 jobs:
-  # ==========================================
-  # JOB 1: Backend Lint & Test
-  # ==========================================
-  backend:
-    name: Backend Lint & Test
+  test-backend:
+    name: Backend Tests
     runs-on: ubuntu-latest
 
     services:
       postgres:
         image: postgres:16-alpine
         env:
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgrespassword
-          POSTGRES_DB: taskmanager_test
+          POSTGRES_USER: task_user
+          POSTGRES_PASSWORD: task_password
+          POSTGRES_DB: taskmanager_test_db
         ports:
           - 5432:5432
         options: >-
@@ -30,98 +27,101 @@ jobs:
           --health-retries 5
 
     steps:
-      - name: Checkout repository code
+      - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Set up Node.js 20
+      - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 20
           cache: 'npm'
           cache-dependency-path: backend/package-lock.json
 
-      - name: Install backend dependencies
-        run: npm --prefix backend ci
+      - name: Install Dependencies
+        working-directory: ./backend
+        run: npm ci
 
-      - name: Run backend linter
-        run: npm --prefix backend run lint
-
-      - name: Run database migrations on test database
+      - name: Run Backend Tests
+        working-directory: ./backend
         env:
+          PORT: 5000
           NODE_ENV: test
           DB_HOST: localhost
           DB_PORT: 5432
-          DB_TEST_NAME: taskmanager_test
-          DB_USER: postgres
-          DB_PASSWORD: postgrespassword
-        run: npm --prefix backend run migrate
+          DB_USER: task_user
+          DB_PASSWORD: task_password
+          DB_NAME: taskmanager_test_db
+          JWT_SECRET: test_jwt_secret_key_for_ci_pipeline
+        run: npm test
 
-      - name: Run backend Jest test suite
-        env:
-          NODE_ENV: test
-          DB_HOST: localhost
-          DB_PORT: 5432
-          DB_TEST_NAME: taskmanager_test
-          DB_USER: postgres
-          DB_PASSWORD: postgrespassword
-          JWT_SECRET: ci_test_secret_key_minimum_32_characters_long
-        run: npm --prefix backend run test
-
-  # ==========================================
-  # JOB 2: Frontend Lint, Test & Build
-  # ==========================================
-  frontend:
-    name: Frontend Lint, Test & Build
+  test-frontend:
+    name: Frontend Tests
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository code
+      - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Set up Node.js 20
+      - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 20
           cache: 'npm'
           cache-dependency-path: frontend/package-lock.json
 
-      - name: Install frontend dependencies
-        run: npm --prefix frontend ci
+      - name: Install Dependencies
+        working-directory: ./frontend
+        run: npm ci
 
-      - name: Run frontend linter
-        run: npm --prefix frontend run lint
+      - name: Run Frontend Tests
+        working-directory: ./frontend
+        run: npm test
 
-      - name: Run frontend Vitest test suite
-        run: npm --prefix frontend run test
-
-      - name: Build frontend production bundle
-        run: npm --prefix frontend run build
-
-  # ==========================================
-  # JOB 3: Test Docker Image Builds
-  # ==========================================
-  docker-build:
-    name: Docker Images Build Verification
-    needs: [backend, frontend]
+  deploy:
+    name: Build, Push to ECR & Deploy to EC2
+    needs: [test-backend, test-frontend]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository code
+      - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Build Backend Docker Image
-        uses: docker/build-push-action@v5
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
         with:
-          context: ./backend
-          push: false
-          tags: taskmanager-backend:latest
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ap-south-1
 
-      - name: Build Frontend Docker Image
-        uses: docker/build-push-action@v5
+      - name: Log in to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and Push Backend Image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        run: |
+          docker build -t $ECR_REGISTRY/taskmanager-backend:latest ./backend
+          docker push $ECR_REGISTRY/taskmanager-backend:latest
+
+      - name: Build and Push Frontend Image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        run: |
+          docker build -t $ECR_REGISTRY/taskmanager-frontend:latest ./frontend
+          docker push $ECR_REGISTRY/taskmanager-frontend:latest
+
+      - name: Deploy to EC2 via SSH
+        uses: appleboy/ssh-action@v1.0.3
         with:
-          context: ./frontend
-          push: false
-          tags: taskmanager-frontend:latest
+          host: ${{ secrets.EC2_HOST }}
+          username: ubuntu
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            cd ~/app
+            aws ecr get-login-password --region ap-south-1 | docker login --username AWS --password-stdin ${{ steps.login-ecr.outputs.registry }}
+            docker compose -f docker-compose.prod.yml pull
+            docker compose -f docker-compose.prod.yml up -d
+            docker compose -f docker-compose.prod.yml exec -T backend npm run migrate
+            docker image prune -f
