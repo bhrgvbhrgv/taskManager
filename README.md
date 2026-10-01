@@ -439,4 +439,40 @@ npm run lint
 * [x] Frontend tests pass (12/12 tests passing)
 * [x] Lint passes on backend and frontend
 * [x] Frontend production build passes
-* [x] No forbidden infrastructure files created
+
+---
+
+## 17. DevOps & Production Architecture
+
+### System Architecture
+```
+                  Internet (Port 80)
+                          │
+                          ▼
+            ┌───────────────────────────┐
+            │   Nginx (Reverse Proxy)   │  <-- Rate limiting (10r/s)
+            │      Frontend (React)     │  <-- Security headers (HSTS, CSP, XSS)
+            └─────────────┬─────────────┘
+                          │
+             /api/* proxy │ (Internal Docker Bridge)
+                          ▼
+            ┌───────────────────────────┐
+            │   Express.js Backend      │  <-- Node 20 Alpine (Non-root user)
+            └─────────────┬─────────────┘
+                          │
+              PostgreSQL  │ (Internal Docker Bridge)
+                          ▼
+            ┌───────────────────────────┐
+            │   PostgreSQL 16 Alpine    │  <-- Persistent Docker Volume
+            └───────────────────────────┘
+```
+
+### Infrastructure Highlights
+* **Docker Multi-stage Builds**: Minimal production image footprint using Alpine Linux.
+* **Amazon ECR**: Container registry storing tagged immutable release images.
+* **AWS EC2 (`t3.micro`)**: Hosted on free-tier Ubuntu 24.04 LTS instance with strict security group egress/ingress rules.
+* **GitHub Actions CI/CD Pipeline**:
+  1. **Continuous Integration**: Spawns isolated PostgreSQL service container, runs database migrations, executes backend (26 Jest tests) and frontend (12 Vitest tests).
+  2. **Continuous Delivery**: Upon merge to `main`, builds multi-arch Docker images, authenticates and pushes to Amazon ECR.
+  3. **Continuous Deployment**: Secure SSH deployment to EC2 pulling latest images, executing database migrations, and executing zero-downtime rolling restart with container pruning.
+
